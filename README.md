@@ -207,6 +207,39 @@ Supabase DB 저장
 * TypeScript
 
 
+## 로컬 실행 (v1 LangGraph)
+
+v1 그래프는 `langgraph dev`로 로컬에서 바로 띄울 수 있습니다.
+
+필수:
+
+* Python 3.13+ (`uv` 권장)
+* `OPENAI_API_KEY` 환경 변수
+
+선택:
+
+* `LANGSMITH_API_KEY` — LangSmith 트레이싱
+* `OPENAI_MODEL` — 기본값 `gpt-4o-mini`
+
+설치 및 실행:
+
+```bash
+uv sync
+export OPENAI_API_KEY="..."
+# optional tracing
+export LANGSMITH_API_KEY="..."
+uv run langgraph dev
+# 브라우저 자동 실행을 원하지 않으면:
+# uv run langgraph dev --no-browser
+```
+
+`[langgraph.json](langgraph.json)`에 정의된 그래프 ID는 `dev_coach` 입니다. 에이전트 입력으로 예를 들면 `topic`, `profile`(선택) 키를 state에 넣을 수 있습니다.
+
+Human-in-the-loop 답변 수집은 `collect_answer` 노드에서 `interrupt()` 로 일시정지합니다. Studio/API에서 resume 할 때는 답변 문자열 또는 `{"answer": "..."}" JSON`을 전달하면 됩니다.
+
+`.env` 예시는 [`.env.example`](.env.example) 를 참고하세요. secret 값은 저장소에 커밋하지 마세요.
+
+
 ## MVP Roadmap
 
 ### v1
