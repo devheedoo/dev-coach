@@ -228,11 +228,3 @@ def build_graph():
 
 
 graph = build_graph()
-
-
-def main() -> None:
-    print("Use `uv run langgraph dev` to run the Dev Coach graph (graph id: dev_coach).")
-
-
-if __name__ == "__main__":
-    main()

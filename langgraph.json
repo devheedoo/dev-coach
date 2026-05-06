@@ -2,6 +2,6 @@
   "$schema": "https://langgra.ph/schema.json",
   "dependencies": ["."],
   "graphs": {
-    "dev_coach": "./main.py:graph"
+    "dev_coach": "./dev_coach.py:graph"
   }
 }

@@ -233,7 +233,7 @@ uv run langgraph dev
 # uv run langgraph dev --no-browser
 ```
 
-`[langgraph.json](langgraph.json)`에 정의된 그래프 ID는 `dev_coach` 입니다. 에이전트 입력으로 예를 들면 `topic`, `profile`(선택) 키를 state에 넣을 수 있습니다.
+`[langgraph.json](langgraph.json)`에 정의된 그래프 ID는 `dev_coach` 이며, runtime entrypoint는 [`dev_coach.py`](dev_coach.py)의 `graph` 입니다. [`main.ipynb`](main.ipynb)는 notebook에서 그래프를 import해 실험하는 용도로 사용할 수 있습니다. 에이전트 입력으로 예를 들면 `topic`, `profile`(선택) 키를 state에 넣을 수 있습니다.
 
 Human-in-the-loop 답변 수집은 `collect_answer` 노드에서 `interrupt()` 로 일시정지합니다. Studio/API에서 resume 할 때는 답변 문자열 또는 `{"answer": "..."}" JSON`을 전달하면 됩니다.
 
