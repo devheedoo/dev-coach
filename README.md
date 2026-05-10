@@ -233,11 +233,36 @@ uv run langgraph dev
 # uv run langgraph dev --no-browser
 ```
 
-`[langgraph.json](langgraph.json)`에 정의된 그래프 ID는 `dev_coach` 이며, runtime entrypoint는 [`dev_coach.py`](dev_coach.py)의 `graph` 입니다. [`main.ipynb`](main.ipynb)는 notebook에서 그래프를 import해 실험하는 용도로 사용할 수 있습니다. 에이전트 입력으로 예를 들면 `topic`, `profile`(선택) 키를 state에 넣을 수 있습니다.
+`[langgraph.json](langgraph.json)`에 정의된 그래프 ID는 `dev_coach` 이며, runtime entrypoint는 [`dev_coach.py`](dev_coach.py)의 `graph` 입니다.
 
 Human-in-the-loop 답변 수집은 `collect_answer` 노드에서 `interrupt()` 로 일시정지합니다. Studio/API에서 resume 할 때는 답변 문자열 또는 `{"answer": "..."}" JSON`을 전달하면 됩니다.
 
 `.env` 예시는 [`.env.example`](.env.example) 를 참고하세요. secret 값은 저장소에 커밋하지 마세요.
+
+
+### 노트북 스모크 테스트 (`main.ipynb`)
+
+[`main.ipynb`](main.ipynb)에서는 로컬에서 그래프를 **기본 시나리오**대로 한 바퀴 돌려볼 수 있습니다.
+
+흐름 요약:
+
+1. 새 주제 기준으로 면접 질문 생성
+2. `interrupt()` 로 답변 입력 대기
+3. `langgraph.types.Command(resume=...)` 로 샘플 답변을 넣어 실행 재개
+4. 답변 평가(루브릭은 각 축 **1–10**, 10은 해당 영역에서 완전히 이해하고 자신 있게 설명할 수 있는 수준)
+5. 학습 포커스 토픽 반영 및 **SQLite**에 복습 카드 저장
+6. 꼬리 질문 생성
+
+**준비**
+
+* 프로젝트 루트의 `.env`에 `OPENAI_API_KEY` 설정
+* Jupyter 커널의 작업 디렉터리가 저장소 루트인지 확인 (예: `pwd` 결과가 `dev-coach` 프로젝트 폴더)
+
+**참고**
+
+* Human-in-the-loop 이후 단계를 노트북에서 이어 가려면 **`MemorySaver`** 같은 메모리용 checkpointer를 붙인 그래프가 필요합니다. 예시에서는 `build_graph(checkpointer=MemorySaver())` 를 사용합니다. `langgraph dev` 로 Studio를 띄울 때는 플랫폼이 persistence를 주입합니다.
+* 노트북 예시는 기본적으로 **`_notebook_dev_coach.sqlite`** 에 카드를 쓰도록 해 두어, 로컬에서 쓰는 `dev_coach.sqlite`(또는 `DEV_COACH_SQLITE_PATH`)와 데이터가 섞이지 않게 합니다. 학습자 구분은 `DEV_COACH_LEARNER_ID`(예: `notebook_demo`)를 사용합니다.
+* 에이전트 입력으로는 예를 들어 `topic`, `profile`(선택), `learner_identifier`(선택) 키를 state에 넣을 수 있습니다.
 
 
 ## MVP Roadmap

@@ -15,3 +15,6 @@ wheels/
 
 # LangGraph API
 .langgraph_api/
+
+# Local SQLite database for spaced repetition state
+*.sqlite
