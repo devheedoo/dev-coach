@@ -393,18 +393,11 @@ def evaluate_answer(state: DevCoachState) -> dict[str, Any]:
     }
 
 
-def route_after_evaluate(
-    state: DevCoachState,
-) -> Literal["scheduled_review_path", "new_topic_path"]:
-    return (
-        "scheduled_review_path"
-        if state.get("question_origin") == "scheduled_review"
-        else "new_topic_path"
-    )
-
-
 def update_review_schedule_after_evaluation(state: DevCoachState) -> dict[str, Any]:
     """Advance spaced repetition metadata after a scheduled review question."""
+    if state.get("question_origin") != "scheduled_review":
+        return {}
+
     evaluation = state.get("evaluation") or {}
     axis_keys = ("accuracy", "depth", "practical_experience", "communication")
     axis_values: list[float] = []
@@ -541,19 +534,15 @@ def build_graph(*, checkpointer=None):
     builder.add_edge("generate_scheduled_review_question", "collect_answer")
     builder.add_edge("collect_answer", "evaluate_answer")
 
-    builder.add_conditional_edges(
-        "evaluate_answer",
-        route_after_evaluate,
-        {
-            "scheduled_review_path": "update_review_schedule_after_evaluation",
-            "new_topic_path": "analyze_learning_focus",
-        },
+    builder.add_edge("evaluate_answer", "update_review_schedule_after_evaluation")
+    builder.add_edge("evaluate_answer", "analyze_learning_focus")
+    builder.add_edge(
+        ["update_review_schedule_after_evaluation", "analyze_learning_focus"],
+        "merge_learning_topics",
     )
-    builder.add_edge("update_review_schedule_after_evaluation", "analyze_learning_focus")
-    builder.add_edge("analyze_learning_focus", "merge_learning_topics")
     builder.add_edge("merge_learning_topics", "persist_review_cards_sqlite")
-    builder.add_edge("persist_review_cards_sqlite", "generate_follow_up")
-    builder.add_edge("generate_follow_up", END)
+    builder.add_edge("merge_learning_topics", "generate_follow_up")
+    builder.add_edge(["persist_review_cards_sqlite", "generate_follow_up"], END)
 
     # LangGraph Platform / `langgraph dev` injects persistence when deployed there.
     # For notebooks/tests you may pass a MemorySaver instance via `checkpointer`.
