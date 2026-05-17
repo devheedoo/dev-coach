@@ -50,35 +50,92 @@ def _format_question_context_markdown(result: dict[str, Any]) -> str:
     return f"**질문 출처:** {origin}"
 
 
-def _format_evaluation_markdown(result: dict[str, Any]) -> str:
-    evaluation = result.get("evaluation") or {}
+def _interrupt_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    """First LangGraph interrupt attachment as a dict, if present."""
+    interrupts = result.get("__interrupt__")
+    if not interrupts:
+        return None
+    first = interrupts[0]
+    val = getattr(first, "value", None)
+    if val is None and isinstance(first, dict):
+        val = first.get("value") or first.get("__value__")
+    return val if isinstance(val, dict) else None
+
+
+def _format_rubric_block_md(evaluation: dict[str, Any]) -> str:
     accuracy = evaluation.get("accuracy")
     depth = evaluation.get("depth")
     practical = evaluation.get("practical_experience")
     comm = evaluation.get("communication")
     feedback = evaluation.get("feedback") or ""
-
-    topics = result.get("tracked_learning_topic_labels") or []
-    follow = (result.get("follow_up_question") or "").strip()
-
-    lines: list[str] = []
-    lines.append("### 평가 요약")
-    lines.append(_format_question_context_markdown(result))
-    lines.append(
+    exemplary = (evaluation.get("exemplary_answer") or "").strip()
+    scores = (
         f"- 기술적 정확성: **{accuracy}**/10\n"
         f"- 설명 깊이: **{depth}**/10\n"
         f"- 실무 근거: **{practical}**/10\n"
         f"- 명확성·구조: **{comm}**/10"
     )
-    lines.append(f"\n**피드백**\n\n{feedback}")
+    parts: list[str] = [scores, f"**피드백**\n\n{feedback}"]
+    if exemplary:
+        parts.append(f"**모범 답안 참고**(질문에 대한 예시 답안)\n\n{exemplary}")
+    return "\n\n".join(parts)
+
+
+def _format_main_answer_evaluation_markdown(result: dict[str, Any]) -> str:
+    """평가 블록: 원본(첫) 답변에 대한 루브릭."""
+    evaluation = result.get("evaluation") or {}
+    lines: list[str] = ["### 첫 답변 평가", _format_question_context_markdown(result), _format_rubric_block_md(evaluation)]
+    return "\n\n".join(lines)
+
+
+def _format_single_follow_up_evaluation_markdown(item: dict[str, Any]) -> str:
+    rnd = item.get("round", "?")
+    question = (item.get("question") or "").strip()
+    evaluation = item.get("evaluation") or {}
+    header = f"### 꼬리 질문 {rnd} 평가"
+    q_line = f"**꼬리 질문 {rnd}**\n\n{question}" if question else ""
+    body = _format_rubric_block_md(evaluation) if evaluation else ""
+    parts = [p for p in (header, q_line, body) if p]
+    return "\n\n".join(parts)
+
+
+def _format_follow_up_step_markdown(result: dict[str, Any], interrupt_val: dict[str, Any]) -> str:
+    """
+    꼬리 질문에 답하기 전 단계: 첫 답변 평가 또는 직전 꼬리 답변 평가 + 다음 꼬리 질문."""
+    history = list(result.get("follow_up_history") or [])
+    fu_q = (interrupt_val.get("question") or result.get("follow_up_question") or "").strip()
+    round_next = interrupt_val.get("round")
+    if round_next is None:
+        round_next = len(history) + 1
+    try:
+        round_next_i = int(round_next)
+    except (TypeError, ValueError):
+        round_next_i = len(history) + 1
+
+    lines: list[str] = []
+    if not history:
+        lines.append(_format_main_answer_evaluation_markdown(result))
+    else:
+        lines.append(_format_single_follow_up_evaluation_markdown(history[-1]))
+    lines.append(f"### 꼬리 질문 ({round_next_i}/3)\n\n{fu_q}")
+    return "\n\n".join(lines)
+
+
+def _format_final_session_markdown(result: dict[str, Any]) -> str:
+    """세션 종료: 첫 답변 + 3회 꼬리 평가 + 학습 주제 + SQLite 저장 안내."""
+    topics = result.get("tracked_learning_topic_labels") or []
+    lines: list[str] = [_format_main_answer_evaluation_markdown(result)]
+    for item in result.get("follow_up_history") or []:
+        lines.append(_format_single_follow_up_evaluation_markdown(item))
+    lines.append("### 종합")
     if topics:
-        lines.append(f"\n**학습 포커스 주제**\n\n{', '.join(str(t) for t in topics)}")
-    if follow:
-        lines.append(f"\n**꼬리 질문**\n\n{follow}")
+        lines.append(f"**학습 포커스 주제**\n\n{', '.join(str(t) for t in topics)}")
     lines.append(
-        "\n---\n*한 턴이 끝났습니다. 사이드바에서 **Start / Reset interview**로 새 질문을 시작하세요.*"
+        "\n---\n"
+        "*꼬리 질문 3회 답변과 평가가 끝났습니다. 복습 카드가 SQLite에 반영되었습니다. "
+        "새로 시작하려면 사이드바의 **Start / Reset interview**를 누르세요.*"
     )
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def _start_interview(topic: str, learner_identifier: str, profile: dict[str, Any] | None) -> None:
@@ -128,7 +185,7 @@ def _start_interview(topic: str, learner_identifier: str, profile: dict[str, Any
         st.session_state.messages.append(
             {
                 "role": "assistant",
-                "content": _format_evaluation_markdown(result),
+                "content": _format_final_session_markdown(result),
             }
         )
 
@@ -151,9 +208,23 @@ def _submit_answer(user_text: str) -> None:
         st.error(f"예기치 않은 오류: {exc}")
         return
 
+    intr = _interrupt_payload(result)
+    if intr:
+        st.session_state.waiting_for_answer = True
+        intr_type = intr.get("type")
+        if intr_type == "follow_up_answer":
+            content = _format_follow_up_step_markdown(result, intr)
+        else:
+            content = (
+                "### 계속\n\n"
+                f"(알 수 없는 interrupt 유형: `{intr_type}`)"
+            )
+        st.session_state.messages.append({"role": "assistant", "content": content})
+        return
+
     st.session_state.waiting_for_answer = False
     st.session_state.messages.append(
-        {"role": "assistant", "content": _format_evaluation_markdown(result)}
+        {"role": "assistant", "content": _format_final_session_markdown(result)}
     )
 
 
