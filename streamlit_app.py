@@ -34,6 +34,22 @@ def _init_message_list() -> None:
         st.session_state.messages = []
 
 
+def _question_origin_label(origin: str | None) -> str:
+    if origin == "scheduled_review":
+        return "예약 복습"
+    if origin == "new_topic":
+        return "입력 주제"
+    return "알 수 없음"
+
+
+def _format_question_context_markdown(result: dict[str, Any]) -> str:
+    topic = (result.get("current_question_topic_label") or "").strip()
+    origin = _question_origin_label(result.get("question_origin"))
+    if topic:
+        return f"**사용된 주제:** `{topic}`  \n**질문 출처:** {origin}"
+    return f"**질문 출처:** {origin}"
+
+
 def _format_evaluation_markdown(result: dict[str, Any]) -> str:
     evaluation = result.get("evaluation") or {}
     accuracy = evaluation.get("accuracy")
@@ -47,6 +63,7 @@ def _format_evaluation_markdown(result: dict[str, Any]) -> str:
 
     lines: list[str] = []
     lines.append("### 평가 요약")
+    lines.append(_format_question_context_markdown(result))
     lines.append(
         f"- 기술적 정확성: **{accuracy}**/10\n"
         f"- 설명 깊이: **{depth}**/10\n"
@@ -76,6 +93,7 @@ def _start_interview(topic: str, learner_identifier: str, profile: dict[str, Any
     payload: dict[str, Any] = {
         "topic": topic.strip() or "general software engineering",
         "learner_identifier": learner_identifier.strip() or os.getenv("DEV_COACH_LEARNER_ID", "default"),
+        "prefer_new_topic": bool(topic.strip()),
     }
     if profile:
         payload["profile"] = profile
@@ -100,7 +118,10 @@ def _start_interview(topic: str, learner_identifier: str, profile: dict[str, Any
         if not question:
             question = "(질문을 불러오지 못했습니다. 콘솔 로그를 확인하세요.)"
         st.session_state.messages.append(
-            {"role": "assistant", "content": f"### 면접 질문\n\n{question}"}
+            {
+                "role": "assistant",
+                "content": f"### 면접 질문\n\n{_format_question_context_markdown(result)}\n\n{question}",
+            }
         )
     else:
         st.session_state.waiting_for_answer = False

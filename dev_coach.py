@@ -100,6 +100,7 @@ class DevCoachState(TypedDict, total=False):
     profile: NotRequired[dict[str, Any]]
     topic: NotRequired[str]
     learner_identifier: NotRequired[str]
+    prefer_new_topic: NotRequired[bool]
 
     review_cards: list[dict[str, Any]]
     tracked_learning_topic_labels: list[str]
@@ -107,6 +108,7 @@ class DevCoachState(TypedDict, total=False):
 
     active_review_topic_label: NotRequired[str]
     question_origin: NotRequired[str]
+    current_question_topic_label: NotRequired[str]
 
     current_question: str
     user_answer: str
@@ -264,7 +266,14 @@ def load_review_cards_from_sqlite(state: DevCoachState) -> dict[str, Any]:
 
 
 def pick_review_or_new_topic(state: DevCoachState) -> dict[str, Any]:
-    """Chooses whether this turn should run a scheduled review question."""
+    """Chooses whether this turn should run a scheduled review or explicit topic question."""
+    topic = (state.get("topic") or "").strip()
+    if state.get("prefer_new_topic") and topic:
+        return {
+            "question_origin": "new_topic",
+            "active_review_topic_label": "",
+        }
+
     now = time.time()
     cards = list(state.get("review_cards") or [])
     due: list[dict[str, Any]] = []
@@ -319,6 +328,7 @@ def generate_question(state: DevCoachState) -> dict[str, Any]:
         "current_question": out.question.strip(),
         "active_review_topic_label": "",
         "question_origin": "new_topic",
+        "current_question_topic_label": topic,
     }
 
 
@@ -342,7 +352,11 @@ def generate_scheduled_review_question(state: DevCoachState) -> dict[str, Any]:
         prompt_parts.extend(["\n참고 조사 노트(한글):\n", research_notes])
 
     out: GeneratedQuestion = llm.invoke("\n".join(prompt_parts))
-    return {"current_question": out.question.strip(), "question_origin": "scheduled_review"}
+    return {
+        "current_question": out.question.strip(),
+        "question_origin": "scheduled_review",
+        "current_question_topic_label": topic,
+    }
 
 
 def collect_answer(state: DevCoachState) -> dict[str, Any]:
