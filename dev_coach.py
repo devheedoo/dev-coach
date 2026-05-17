@@ -195,6 +195,29 @@ def map_rubric_average_to_review_quality_score_0_to_5(average_1_to_10: float) ->
     return int(round((clamped - 1.0) / 9.0 * 5.0))
 
 
+def average_understanding_confidence_score_1_to_10(evaluation: dict[str, Any]) -> int:
+    """Derive a conservative confidence score from the rubric axes."""
+    axis_keys = ("accuracy", "depth", "practical_experience", "communication")
+    values: list[float] = []
+    for key in axis_keys:
+        value = evaluation.get(key)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    if not values:
+        return 5
+    return int(round(max(1.0, min(10.0, sum(values) / len(values)))))
+
+
+def fallback_question_topic_label(question: str, default_label: str = "") -> str:
+    """Create a deterministic card label if structured extraction returns nothing."""
+    cleaned = " ".join(str(question).strip().replace("\n", " ").split())
+    if cleaned:
+        if len(cleaned) > 42:
+            cleaned = cleaned[:42].rstrip() + "..."
+        return cleaned
+    return default_label.strip() or "일반 소프트웨어 엔지니어링"
+
+
 def default_review_card(topic_label: str) -> dict[str, Any]:
     """Creates a new spaced-repetition card with conservative defaults."""
     label = topic_label.strip()
@@ -559,43 +582,83 @@ def update_review_schedule_after_evaluation(state: DevCoachState) -> dict[str, A
 
 
 def analyze_learning_focus(state: DevCoachState) -> dict[str, Any]:
-    """Extract learning focus topics with confidence scores from feedback."""
+    """Extract review-card topics from the main question and feedback."""
     llm = _llm().with_structured_output(LearningFocusExtraction)
+    question = state.get("current_question", "")
+    answer = state.get("user_answer", "")
     evaluation = state.get("evaluation") or {}
     feedback = evaluation.get("feedback", "")
+    exemplary = evaluation.get("exemplary_answer", "")
     prompt = (
         _KOREAN_OUTPUT_RULE
-        + "면접관 피드백에서 학습에 유용한 주제를 2~5개 추출하세요.\n"
-        "각 topic_label은 짧은 한글 명사구여야 합니다.\n"
+        + "아래 면접 질문·답변·평가에서 review_cards에 저장할 학습 주제를 2~5개 추출하세요.\n"
+        "중요: 첫 번째 learning_focus_topics 항목은 반드시 **이 질문 자체의 핵심 주제**여야 합니다.\n"
+        "첫 번째 topic_label은 '첫 번째 질문', '원본 질문' 같은 위치 표현을 쓰지 말고, "
+        "복습 카드로 다시 물어볼 수 있는 구체적인 개념/상황 명사구로 작성하세요.\n"
+        "나머지 항목은 피드백에서 드러난 보완 주제를 추가하세요.\n"
+        "각 topic_label은 짧은 한글 명사구여야 하며, 질문마다 초점이 다르면 서로 다른 라벨로 구분하세요.\n"
         "understanding_confidence_score_1_to_10은 해당 주제에서 후보가 보여 준 이해·자신감 수준입니다(10이면 매우 충분함).\n"
         "전향적이고 건설적인 표현을 쓰세요.\n\n"
+        f"질문:\n{question}\n\n"
+        f"답변:\n{answer}\n\n"
         f"피드백:\n{feedback}\n"
+        f"모범 답안:\n{exemplary}\n"
     )
     out: LearningFocusExtraction = llm.invoke(prompt)
     topics = [item.model_dump() for item in out.learning_focus_topics]
+    if not topics:
+        topics = [
+            {
+                "topic_label": fallback_question_topic_label(
+                    question,
+                    str(state.get("current_question_topic_label", "")),
+                ),
+                "understanding_confidence_score_1_to_10": average_understanding_confidence_score_1_to_10(
+                    evaluation
+                ),
+            }
+        ]
     return {"new_learning_focus_topics": topics}
 
 
 def analyze_follow_up_learning_focus(state: DevCoachState) -> dict[str, Any]:
-    """Extract learning focus topics from the latest follow-up evaluation feedback."""
+    """Extract review-card topics from the latest follow-up question and evaluation."""
     history = list(state.get("follow_up_history") or [])
     if not history:
         return {"new_learning_focus_topics": []}
+    last_item = history[-1]
+    question = str(last_item.get("question", ""))
+    answer = str(last_item.get("answer", ""))
     last_eval = history[-1].get("evaluation") or {}
     feedback = last_eval.get("feedback", "")
-    if not str(feedback).strip():
-        return {"new_learning_focus_topics": []}
+    exemplary = last_eval.get("exemplary_answer", "")
     llm = _llm().with_structured_output(LearningFocusExtraction)
     prompt = (
         _KOREAN_OUTPUT_RULE
-        + "면접관 피드백에서 학습에 유용한 주제를 2~5개 추출하세요.\n"
-        "각 topic_label은 짧은 한글 명사구여야 합니다.\n"
+        + "아래 꼬리 질문·답변·평가에서 review_cards에 저장할 학습 주제를 2~5개 추출하세요.\n"
+        "중요: 첫 번째 learning_focus_topics 항목은 반드시 **이 꼬리 질문 자체의 핵심 주제**여야 합니다.\n"
+        "첫 번째 topic_label은 '꼬리 질문', '두 번째 질문' 같은 위치 표현을 쓰지 말고, "
+        "복습 카드로 다시 물어볼 수 있는 구체적인 개념/상황 명사구로 작성하세요.\n"
+        "나머지 항목은 피드백에서 드러난 보완 주제를 추가하세요.\n"
+        "각 topic_label은 짧은 한글 명사구여야 하며, 질문마다 초점이 다르면 서로 다른 라벨로 구분하세요.\n"
         "understanding_confidence_score_1_to_10은 해당 주제에서 후보가 보여 준 이해·자신감 수준입니다(10이면 매우 충분함).\n"
         "전향적이고 건설적인 표현을 쓰세요.\n\n"
+        f"꼬리 질문:\n{question}\n\n"
+        f"답변:\n{answer}\n\n"
         f"피드백:\n{feedback}\n"
+        f"모범 답안:\n{exemplary}\n"
     )
     out: LearningFocusExtraction = llm.invoke(prompt)
     topics = [item.model_dump() for item in out.learning_focus_topics]
+    if not topics:
+        topics = [
+            {
+                "topic_label": fallback_question_topic_label(question),
+                "understanding_confidence_score_1_to_10": average_understanding_confidence_score_1_to_10(
+                    last_eval
+                ),
+            }
+        ]
     return {"new_learning_focus_topics": topics}
 
 
