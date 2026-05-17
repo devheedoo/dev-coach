@@ -12,7 +12,11 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from dev_coach import build_graph
+from dev_coach import (
+    STREAM_EVALUATION_CHUNK_KEY,
+    STREAM_EVALUATION_PHASE_KEY,
+    build_graph,
+)
 
 load_dotenv()
 
@@ -146,6 +150,8 @@ def _start_interview(topic: str, learner_identifier: str, profile: dict[str, Any
     st.session_state.config = config
     st.session_state.waiting_for_answer = False
     st.session_state.messages = []
+    st.session_state.pop("resume_answer_pending", None)
+    st.session_state.graph_answer_busy = False
 
     payload: dict[str, Any] = {
         "topic": topic.strip() or "general software engineering",
@@ -190,24 +196,43 @@ def _start_interview(topic: str, learner_identifier: str, profile: dict[str, Any
         )
 
 
-def _submit_answer(user_text: str) -> None:
-    graph = _ensure_graph()
-    config = st.session_state.get("config")
-    if not config:
-        st.error("먼저 사이드바에서 인터뷰를 시작하세요.")
-        return
+def _snapshot_to_invoke_result(graph: Any, config: dict[str, Any]) -> dict[str, Any]:
+    """Recreate LangGraph.invoke-style dict (__interrupt__) from persisted checkpoint snapshot."""
+    snap = graph.get_state(config)
+    merged: dict[str, Any] = dict(snap.values)
+    if snap.interrupts:
+        merged["__interrupt__"] = list(snap.interrupts)
+    return merged
 
-    st.session_state.messages.append({"role": "user", "content": user_text})
 
-    try:
-        result = graph.invoke(Command(resume={"answer": user_text}), config=config)
-    except RuntimeError as exc:
-        st.error(f"실행 오류: {exc}")
-        return
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"예기치 않은 오류: {exc}")
-        return
+def _stream_answer_resume_then_snapshot(graph: Any, config: dict[str, Any], user_text: str) -> dict[str, Any]:
+    """Resume with user answer while streaming narration tokens from evaluator nodes."""
+    cmd = Command(resume={"answer": user_text})
 
+    with st.chat_message("assistant"):
+        stream_placeholder = st.empty()
+        score_hint = st.empty()
+        streamed = ""
+
+        def consume_custom(chunk: dict[str, Any]) -> None:
+            nonlocal streamed
+            token = chunk.get(STREAM_EVALUATION_CHUNK_KEY)
+            if isinstance(token, str) and token:
+                streamed += token
+                stream_placeholder.markdown(streamed + " ▍ ")
+            phase = chunk.get(STREAM_EVALUATION_PHASE_KEY)
+            if isinstance(phase, str) and phase == "scoring_started":
+                score_hint.caption("루브릭 점수를 확정하는 중…")
+
+        for mode, chunk in graph.stream(cmd, config=config, stream_mode=["updates", "custom"]):
+            if mode == "custom" and isinstance(chunk, dict):
+                consume_custom(chunk)
+
+    return _snapshot_to_invoke_result(graph, config)
+
+
+def _finalize_resume_invoke_result(result: dict[str, Any]) -> None:
+    """Persist assistant markup like the legacy graph.invoke `_submit_answer` path."""
     intr = _interrupt_payload(result)
     if intr:
         st.session_state.waiting_for_answer = True
@@ -224,7 +249,7 @@ def _submit_answer(user_text: str) -> None:
 
     st.session_state.waiting_for_answer = False
     st.session_state.messages.append(
-        {"role": "assistant", "content": _format_final_session_markdown(result)}
+        {"role": "assistant", "content": _format_final_session_markdown(result)},
     )
 
 
@@ -272,17 +297,42 @@ def main() -> None:
         st.caption("`OPENAI_API_KEY`가 필요합니다. SQLite 경로는 `DEV_COACH_SQLITE_PATH`로 바꿀 수 있습니다.")
 
     waiting = bool(st.session_state.get("waiting_for_answer"))
+    graph_busy = bool(st.session_state.get("graph_answer_busy"))
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
+    resume_text = st.session_state.pop("resume_answer_pending", None)
+    if resume_text is not None:
+        graph = _ensure_graph()
+        config = st.session_state.get("config")
+        st.session_state.graph_answer_busy = True
+        try:
+            if not config:
+                st.error("먼저 사이드바에서 인터뷰를 시작하세요.")
+            else:
+                try:
+                    result = _stream_answer_resume_then_snapshot(graph, config, resume_text)
+                    _finalize_resume_invoke_result(result)
+                except RuntimeError as exc:
+                    st.error(f"실행 오류: {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"예기치 않은 오류: {exc}")
+        finally:
+            st.session_state.graph_answer_busy = False
+        st.rerun()
+
+    chat_disabled = not waiting or graph_busy
+
     prompt = st.chat_input(
         "답변을 입력하세요…" if waiting else "사이드바에서 인터뷰를 시작하면 답변을 입력할 수 있습니다.",
-        disabled=not waiting,
+        disabled=chat_disabled,
     )
-    if prompt and waiting:
-        _submit_answer(prompt.strip())
+    if prompt and waiting and not graph_busy:
+        st.session_state.messages.append({"role": "user", "content": prompt.strip()})
+        st.session_state.resume_answer_pending = prompt.strip()
+        st.session_state.graph_answer_busy = True
         st.rerun()
 
 

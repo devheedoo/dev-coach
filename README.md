@@ -239,6 +239,16 @@ Human-in-the-loop 답변 수집은 `collect_answer` 노드에서 `interrupt()` �
 
 `.env` 예시는 [`.env.example`](.env.example) 를 참고하세요. secret 값은 저장소에 커밋하지 마세요.
 
+### Streamlit UI
+
+브라우저 채팅으로 같은 인터뷰 그래프를 쓸 수 있습니다:
+
+```bash
+uv run streamlit run streamlit_app.py
+```
+
+`streamlit_app.py`는 사용자 답변 메시지를 바로 채팅에 올린 뒤, 평가 서술은 LangGraph 커스텀 스트림으로 chunk 단위에 가깝게 갱신합니다. 각 축 1–10점과 SQLite 반영 상태는 노드 후반 구조화 루브릭 결과로 확정됩니다.
+
 
 ### 노트북 스모크 테스트 (`main.ipynb`)
 

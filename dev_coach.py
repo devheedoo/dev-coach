@@ -5,10 +5,12 @@ from __future__ import annotations
 import difflib
 import os
 import time
+from collections.abc import Callable
 from typing import Any, Literal, NotRequired, TypedDict
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from openai import OpenAI
@@ -136,6 +138,132 @@ def _llm() -> ChatOpenAI:
         raise RuntimeError(msg)
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     return ChatOpenAI(model=model, temperature=0.4)
+
+
+# --- Answer evaluation helpers (streaming narrated text + structured rubric output) ---
+
+STREAM_EVALUATION_CHUNK_KEY = "dev_coach_evaluation_token"
+STREAM_EVALUATION_PHASE_KEY = "dev_coach_evaluation_phase"
+
+
+def evaluation_result_to_dict(result: EvaluationResult) -> dict[str, Any]:
+    """Serialize structured evaluation for graph state consumed by downstream nodes."""
+    return {
+        "accuracy": result.accuracy,
+        "depth": result.depth,
+        "practical_experience": result.practical_experience,
+        "communication": result.communication,
+        "feedback": result.feedback,
+        "exemplary_answer": result.exemplary_answer,
+    }
+
+
+def _chat_chunk_text_piece(chunk: Any) -> str:
+    """Extract plain text deltas from LangChain AIMessage chunks (stream)."""
+    content = getattr(chunk, "content", None)
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                pieces.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") == "text" and part.get("text"):
+                    pieces.append(str(part["text"]))
+            else:
+                text = getattr(part, "text", None)
+                if text:
+                    pieces.append(str(text))
+        return "".join(pieces)
+    return str(content)
+
+
+def stream_llm_plaintext_chunks(writer: Callable[[Any], None], llm_plain: ChatOpenAI, prompt: str) -> None:
+    """Stream plain assistant text chunks to LangGraph StreamWriter."""
+    for chunk in llm_plain.stream(prompt):
+        piece = _chat_chunk_text_piece(chunk)
+        if piece:
+            writer({STREAM_EVALUATION_CHUNK_KEY: piece})
+
+
+def structured_evaluation_prompt_for_main_answer(question: str, answer: str) -> str:
+    """Structured rubric invocation prompt (maintains prior evaluate_answer semantics)."""
+    return (
+        _KOREAN_OUTPUT_RULE
+        + "아래 면접 답변을 루브릭 필드로 평가하세요.\n"
+        "각 축은 1~10점이며 10은 해당 영역에서 완전히 이해하고 자신 있게 설명한 수준입니다.\n"
+        "불완전하지만 방향이 맞는 답에는 공정하게 부분 점수를 주세요.\n"
+        "피드백(feedback)은 반드시 한국어로, 먼저 강점을 요약한 뒤 구체적 성장 포인트를 적으세요.\n"
+        "exemplary_answer는 위 질문에 대해 모범적으로 구성된 답변으로, 약 8~12줄(짧은 문단 또는 불릿 혼합)로 작성하세요. "
+        "질문이 요구하는 핵심을 빠짐없이 짚되, 후보 답변을 베끼지 말고 새로 서술합니다.\n\n"
+        f"질문:\n{question}\n\n"
+        f"답변:\n{answer}\n"
+    )
+
+
+def structured_evaluation_prompt_for_follow_up(question: str, answer: str) -> str:
+    """Structured rubric prompt for follow-up answers (prior evaluate_follow_up semantics)."""
+    return (
+        _KOREAN_OUTPUT_RULE
+        + "아래는 꼬리 질문에 대한 답변입니다. 루브릭 필드로 평가하세요.\n"
+        "각 축은 1~10점이며 10은 해당 영역에서 완전히 이해하고 자신 있게 설명한 수준입니다.\n"
+        "불완전하지만 방향이 맞는 답에는 공정하게 부분 점수를 주세요.\n"
+        "피드백(feedback)은 반드시 한국어로, 먼저 강점을 요약한 뒤 구체적 성장 포인트를 적으세요.\n"
+        "exemplary_answer는 **해당 꼬리 질문**에 대해 모범적으로 구성된 답으로, 약 8~12줄로 작성하세요. "
+        "후보 답변을 베끼지 말고 새로 서술합니다.\n\n"
+        f"꼬리 질문:\n{question}\n\n"
+        f"답변:\n{answer}\n"
+    )
+
+
+def streaming_evaluation_narrative_prompt_for_main(question: str, answer: str) -> str:
+    """
+    Free-form streamed narrative shown to the user before scores are finalized.
+    Must mirror the eventual rubric axes qualitatively; numeric scores appear after structured invocation.
+    """
+    return (
+        _KOREAN_OUTPUT_RULE
+        + "당신은 면접 코치입니다. 아래 질문과 후보 답변을 보고 평가를 **한국어로만** 작성하세요.\n"
+        "**반드시** 아래 형식 그대로 사용하세요:\n\n"
+        "## 피드백\n"
+        "(강점을 먼저 짧게 요약한 뒤, 구체적인 보완 포인트를 서술)\n\n"
+        "## 모범 답안 참고\n"
+        "(이 질문에 대한 예시 모범 답안으로, 불릿/짧은 문단 혼합, 약 8~12줄 분량)\n\n"
+        "주의:\n"
+        "- 위 두 섹션 제목 줄은 변경하지 마세요.\n"
+        "- 정수 점수나 '/10' 표기를 출력하지 마세요(점수는 별도로 계산합니다).\n"
+        "- 후보 답변을 되받아 쓰지 말고, 코치 톤으로 새로 작성하세요.\n\n"
+        f"질문:\n{question}\n\n"
+        f"후보 답변:\n{answer}\n"
+    )
+
+
+def streaming_evaluation_narrative_prompt_for_follow_up(question: str, answer: str) -> str:
+    """Streamed narrative for a follow-up question round."""
+    return (
+        _KOREAN_OUTPUT_RULE
+        + "당신은 면접 코치입니다. 아래 **꼬리 질문**과 후보 답변을 보고 평가를 **한국어로만** 작성하세요.\n"
+        "**반드시** 아래 형식 그대로 사용하세요:\n\n"
+        "## 피드백\n"
+        "(강점을 먼저 짧게 요약한 뒤, 구체적인 보완 포인트를 서술)\n\n"
+        "## 모범 답안 참고\n"
+        "(이 꼬리 질문에 대한 예시 모범 답안으로, 불릿/짧은 문단 혼합, 약 8~12줄 분량)\n\n"
+        "주의:\n"
+        "- 위 두 섹션 제목 줄은 변경하지 마세요.\n"
+        "- 정수 점수나 '/10' 표기를 출력하지 마세요(점수는 별도로 계산합니다).\n"
+        "- 후보 답변을 되받아 쓰지 말고, 코치 톤으로 새로 작성하세요.\n\n"
+        f"꼬리 질문:\n{question}\n\n"
+        f"후보 답변:\n{answer}\n"
+    )
+
+
+def run_structured_evaluation(structured_prompt: str) -> EvaluationResult:
+    """Single structured rubric call (batch) used for durable graph state."""
+    llm = _llm().with_structured_output(EvaluationResult)
+    return llm.invoke(structured_prompt)
 
 
 def _learner_identifier(state: DevCoachState) -> str:
@@ -451,32 +579,17 @@ def collect_answer(state: DevCoachState) -> dict[str, Any]:
 
 
 def evaluate_answer(state: DevCoachState) -> dict[str, Any]:
-    """Score the answer with a 1-10 understanding-focused rubric."""
-    llm = _llm().with_structured_output(EvaluationResult)
+    """Stream narrated 코멘터리, then 확정 구조화 루브릭으로 상태에 반영합니다."""
+    writer = get_stream_writer()
     q = state.get("current_question", "")
     a = state.get("user_answer", "")
-    prompt = (
-        _KOREAN_OUTPUT_RULE
-        + "아래 면접 답변을 루브릭 필드로 평가하세요.\n"
-        "각 축은 1~10점이며 10은 해당 영역에서 완전히 이해하고 자신 있게 설명한 수준입니다.\n"
-        "불완전하지만 방향이 맞는 답에는 공정하게 부분 점수를 주세요.\n"
-        "피드백(feedback)은 반드시 한국어로, 먼저 강점을 요약한 뒤 구체적 성장 포인트를 적으세요.\n"
-        "exemplary_answer는 위 질문에 대해 모범적으로 구성된 답변으로, 약 8~12줄(짧은 문단 또는 불릿 혼합)로 작성하세요. "
-        "질문이 요구하는 핵심을 빠짐없이 짚되, 후보 답변을 베끼지 말고 새로 서술합니다.\n\n"
-        f"질문:\n{q}\n\n"
-        f"답변:\n{a}\n"
-    )
-    out: EvaluationResult = llm.invoke(prompt)
-    return {
-        "evaluation": {
-            "accuracy": out.accuracy,
-            "depth": out.depth,
-            "practical_experience": out.practical_experience,
-            "communication": out.communication,
-            "feedback": out.feedback,
-            "exemplary_answer": out.exemplary_answer,
-        }
-    }
+    narrative_prompt = streaming_evaluation_narrative_prompt_for_main(str(q), str(a))
+    structured_prompt = structured_evaluation_prompt_for_main_answer(str(q), str(a))
+
+    stream_llm_plaintext_chunks(writer, _llm(), narrative_prompt)
+    writer({STREAM_EVALUATION_PHASE_KEY: "scoring_started"})
+    structured = run_structured_evaluation(structured_prompt)
+    return {"evaluation": evaluation_result_to_dict(structured)}
 
 
 def collect_follow_up_answer(state: DevCoachState) -> dict[str, Any]:
@@ -505,30 +618,17 @@ def collect_follow_up_answer(state: DevCoachState) -> dict[str, Any]:
 
 
 def evaluate_follow_up_answer(state: DevCoachState) -> dict[str, Any]:
-    """Score the follow-up answer with the same rubric as the main answer."""
-    llm = _llm().with_structured_output(EvaluationResult)
+    """Stream narrated 평가 텍스트 후 꼬리 답변 루브릭을 구조화로 확정합니다."""
+    writer = get_stream_writer()
     q = state.get("follow_up_question", "")
     a = state.get("follow_up_answer", "")
-    prompt = (
-        _KOREAN_OUTPUT_RULE
-        + "아래는 꼬리 질문에 대한 답변입니다. 루브릭 필드로 평가하세요.\n"
-        "각 축은 1~10점이며 10은 해당 영역에서 완전히 이해하고 자신 있게 설명한 수준입니다.\n"
-        "불완전하지만 방향이 맞는 답에는 공정하게 부분 점수를 주세요.\n"
-        "피드백(feedback)은 반드시 한국어로, 먼저 강점을 요약한 뒤 구체적 성장 포인트를 적으세요.\n"
-        "exemplary_answer는 **해당 꼬리 질문**에 대해 모범적으로 구성된 답으로, 약 8~12줄로 작성하세요. "
-        "후보 답변을 베끼지 말고 새로 서술합니다.\n\n"
-        f"꼬리 질문:\n{q}\n\n"
-        f"답변:\n{a}\n"
-    )
-    out: EvaluationResult = llm.invoke(prompt)
-    eval_dict = {
-        "accuracy": out.accuracy,
-        "depth": out.depth,
-        "practical_experience": out.practical_experience,
-        "communication": out.communication,
-        "feedback": out.feedback,
-        "exemplary_answer": out.exemplary_answer,
-    }
+    narrative_prompt = streaming_evaluation_narrative_prompt_for_follow_up(str(q), str(a))
+    structured_prompt = structured_evaluation_prompt_for_follow_up(str(q), str(a))
+
+    stream_llm_plaintext_chunks(writer, _llm(), narrative_prompt)
+    writer({STREAM_EVALUATION_PHASE_KEY: "scoring_started"})
+    structured = run_structured_evaluation(structured_prompt)
+    eval_dict = evaluation_result_to_dict(structured)
     history = list(state.get("follow_up_history") or [])
     round_index = len(history) + 1
     history.append(
