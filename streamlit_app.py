@@ -154,7 +154,7 @@ def _start_interview(topic: str, learner_identifier: str, profile: dict[str, Any
     st.session_state.graph_answer_busy = False
 
     payload: dict[str, Any] = {
-        "topic": topic.strip() or "general software engineering",
+        "topic": topic.strip(),
         "learner_identifier": learner_identifier.strip() or os.getenv("DEV_COACH_LEARNER_ID", "default"),
         "prefer_new_topic": bool(topic.strip()),
     }
@@ -263,35 +263,51 @@ def main() -> None:
 
     with st.sidebar:
         st.header("설정")
-        topic = st.text_input("주제 (topic)", value="React performance")
+        topic_placeholder = "복습 질문 또는 소프트웨어 엔지니어링"
+        default_learner_id = os.getenv("DEV_COACH_LEARNER_ID", "streamlit_user")
+        default_years = "5"
+        default_target_company = "OpenAI"
+        default_role = "Frontend Engineer"
+        default_level = "Senior"
+        default_notes = "React performance와 실무 경험 중심"
+
+        topic = st.text_input("주제 (topic)", value="", placeholder=topic_placeholder)
         learner_id = st.text_input(
             "학습자 ID (learner_identifier)",
-            value=os.getenv("DEV_COACH_LEARNER_ID", "streamlit_user"),
+            value="",
+            placeholder=default_learner_id,
         )
         st.subheader("프로필 (선택)")
-        years = st.text_input("경력 년수 (years_experience)", value="5")
-        target_company = st.text_input("목표 회사 (target_company)", value="")
-        role = st.text_input("역할 (role)", value="Frontend Engineer")
-        level = st.text_input("레벨 (level)", value="Senior")
-        notes = st.text_area("노트 (notes)", value="", height=68)
+        years = st.text_input("경력 년수 (years_experience)", value="", placeholder=default_years)
+        target_company = st.text_input("목표 회사 (target_company)", value="", placeholder=default_target_company)
+        role = st.text_input("역할 (role)", value="", placeholder=default_role)
+        level = st.text_input("레벨 (level)", value="", placeholder=default_level)
+        notes = st.text_area("노트 (notes)", value="", placeholder=default_notes, height=68)
 
+        topic_value = topic.strip()
+        learner_id_value = learner_id.strip() or default_learner_id
+        years_value = years.strip() or default_years
+        target_company_value = target_company.strip() or default_target_company
+        role_value = role.strip() or default_role
+        level_value = level.strip() or default_level
+        notes_value = notes.strip() or default_notes
         profile: dict[str, Any] = {}
-        if years.strip():
+        if years_value:
             try:
-                profile["years_experience"] = int(years.strip())
+                profile["years_experience"] = int(years_value)
             except ValueError:
-                profile["years_experience"] = years.strip()
-        if target_company.strip():
-            profile["target_company"] = target_company.strip()
-        if role.strip():
-            profile["role"] = role.strip()
-        if level.strip():
-            profile["level"] = level.strip()
-        if notes.strip():
-            profile["notes"] = notes.strip()
+                profile["years_experience"] = years_value
+        if target_company_value:
+            profile["target_company"] = target_company_value
+        if role_value:
+            profile["role"] = role_value
+        if level_value:
+            profile["level"] = level_value
+        if notes_value:
+            profile["notes"] = notes_value
 
         if st.button("Start / Reset interview", type="primary"):
-            _start_interview(topic, learner_id, profile if profile else None)
+            _start_interview(topic_value, learner_id_value, profile if profile else None)
 
         st.divider()
         st.caption("`OPENAI_API_KEY`가 필요합니다. SQLite 경로는 `DEV_COACH_SQLITE_PATH`로 바꿀 수 있습니다.")
